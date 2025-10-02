@@ -1,0 +1,30 @@
+# Ignore Python virtual environments (like your 'venv' folder)
+venv/
+/venv/
+env/
+/env/
+*.venv
+
+# Ignore Python cache files (the '__pycache__' folders)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Ignore the folder with your exploratory notebooks
+/notebooks/
+
+# Ignore OS-specific files that are not part of your code
+.DS_Store
+Thumbs.db
+
+# Ignore IDE configuration folders
+.idea/
+.vscode/
+
+# Ignore large raw and processed data files
+data/reference/*.fasta
+data/processed/*.csv
