@@ -93,7 +93,7 @@ async def run_blast_async(sequence: str) -> str:
 # --- API Endpoints ---
 @app.get("/")
 def read_root():
-    return {"status": "ok", "message": "Deep Sea AI Backend v11.0 is running."}
+    return FileResponse('index.html')
 
 @app.post("/process_fasta")
 async def process_fasta(

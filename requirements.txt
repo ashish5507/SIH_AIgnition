@@ -1,6 +1,5 @@
-joblib==1.5.2
-numpy==2.3.3
-torch==2.8.0
+joblib
+numpy
 torch
 scikit-learn
 pandas
