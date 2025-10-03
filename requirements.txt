@@ -2,7 +2,7 @@
 fastapi==0.118.0
 uvicorn==0.37.0
 python-multipart==0.0.20
-
+pydantic
 # Core AI & Data Libraries
 scikit-learn==1.6.1
 joblib==1.5.2
