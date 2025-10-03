@@ -1,8 +1,9 @@
 fastapi
 uvicorn[standard]
 pydantic
+torch
 scikit-learn==1.7.2
-joblib
+joblib==1.5.2
 biopython
 python-multipart
 pandas
