@@ -4,7 +4,6 @@ uvicorn==0.37.0
 python-multipart==0.0.20
 
 # Core AI & Data Libraries
-torch==2.8.0
 scikit-learn==1.6.1
 joblib==1.5.2
 pandas==2.2.2
