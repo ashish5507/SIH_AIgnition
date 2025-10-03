@@ -1,0 +1,7 @@
+# Ignore large model files
+models/
+data/
+
+# Ignore git and cache files
+.git
+__pycache__/

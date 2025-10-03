@@ -4,35 +4,62 @@ import json
 import joblib
 import os
 import numpy as np
-
 from src.model_arch import DNA_CNN_Upgraded
+import torch, torch.nn.functional as F, json, joblib, os, requests
+import numpy as np
+from src.model_arch import DNA_CNN_Upgraded
+from tqdm import tqdm
+
+def download_file_if_not_exists(url, filepath):
+    """Downloads a file if it doesn't already exist."""
+    dir_name = os.path.dirname(filepath)
+    os.makedirs(dir_name, exist_ok=True)
+    if not os.path.exists(filepath):
+        print(f"Downloading {os.path.basename(filepath)}...")
+        with requests.get(url, stream=True) as r:
+            r.raise_for_status()
+            with open(filepath, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        print(f"Downloaded {os.path.basename(filepath)} successfully.")
 
 class DeepSeaHybridClassifier:
     def __init__(self, models_path='models/', data_path='data/processed/'):
-        print("INFO: Initializing DeepSeaHybridClassifier (v6 - Adaptive)...")
+        print("INFO: Initializing DeepSeaHybridClassifier...")
+        
+        # Define the base URL for your raw files on GitHub
+        base_url = "https://github.com/ashish5507/SIH_AIgnition/raw/main/"
+        
+        # List of files to download
+        files_to_ensure = {
+            os.path.join(models_path, 'dna_cnn_full_v1.pth'): base_url + "models/dna_cnn_full_v1.pth",
+            os.path.join(models_path, 'hashing_vectorizer_proto.joblib'): base_url + "models/hashing_vectorizer_proto.joblib",
+            os.path.join(models_path, 'kmeans_clusterer_proto.joblib'): base_url + "models/kmeans_clusterer_proto.joblib",
+            os.path.join(models_path, 'svd_transformer_proto.joblib'): base_url + "models/svd_transformer_proto.joblib",
+            os.path.join(data_path, 'label_mappings_full.json'): base_url + "data/processed/label_mappings_full.json"
+        }
+        
+        # Download each file
+        for local_path, url in files_to_ensure.items():
+            download_file_if_not_exists(url, local_path)
+
+        # --- Load Models (same as before) ---
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # ... (The rest of your __init__ and predict_batch methods remain exactly the same) ...
         self.dna_vocab = {'<pad>': 0, 'A': 1, 'C': 2, 'G': 3, 'T': 4, '<unk>': 5}
         self.max_length = 500
-
         self.vectorizer = joblib.load(os.path.join(models_path, 'hashing_vectorizer_proto.joblib'))
         self.kmeans = joblib.load(os.path.join(models_path, 'kmeans_clusterer_proto.joblib'))
         self.svd = joblib.load(os.path.join(models_path, 'svd_transformer_proto.joblib'))
-        
         with open(os.path.join(data_path, 'label_mappings_full.json'), 'r') as f:
             mappings = json.load(f)
         self.int_to_label = {int(k): v for k, v in mappings['int_to_label'].items()}
-        
         VOCAB_SIZE, EMBEDDING_DIM, NUM_CLASSES = len(self.dna_vocab), 64, len(self.int_to_label)
-        
-        self.cnn_model = DNA_CNN_Upgraded(
-            vocab_size=VOCAB_SIZE, embedding_dim=EMBEDDING_DIM,
-            num_classes=NUM_CLASSES, max_length=self.max_length
-        )
+        self.cnn_model = DNA_CNN_Upgraded(VOCAB_SIZE, EMBEDDING_DIM, NUM_CLASSES, self.max_length)
         self.cnn_model.load_state_dict(torch.load(os.path.join(models_path, 'dna_cnn_full_v1.pth'), map_location=self.device))
         self.cnn_model.to(self.device)
         self.cnn_model.eval()
-        print("INFO: All models loaded successfully.")
-
+        print("INFO: All models downloaded and loaded successfully.")
     def _tokenize_batch(self, dna_sequences):
         token_list = []
         for seq in dna_sequences:
