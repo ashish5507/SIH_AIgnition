@@ -1,21 +1,21 @@
-# Use an official Python runtime as a parent image
-FROM python:3.9-slim
+# Use a fuller Python base image (has more system deps preinstalled)
+FROM python:3.9-bullseye
 
-# Set the working directory in the container
+# Set working directory
 WORKDIR /app
 
-# Copy the requirements file into the container
+# Copy only requirements first (to leverage Docker caching)
 COPY requirements.txt ./
 
-# Install any needed packages specified in requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# Upgrade pip and install dependencies
+RUN pip install --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of your application code into the container
-# This includes your api.py, index.html, and the src/, models/, data/ folders
+# Copy the rest of your code
 COPY . .
 
-# Expose the port that Hugging Face Spaces expects
-EXPOSE 7860
+# Railway injects PORT as an env variable, so use it
+EXPOSE 8000
 
-# Define the command to run your application's backend server on the correct port
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "7860"]
+# Run FastAPI with uvicorn, bind to $PORT
+CMD ["sh", "-c", "uvicorn api:app --host 0.0.0.0 --port ${PORT:-8000}"]
