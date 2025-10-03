@@ -4,11 +4,9 @@ import json
 import joblib
 import os
 import numpy as np
-from src.model_arch import DNA_CNN_Upgraded
-import torch, torch.nn.functional as F, json, joblib, os, requests
-import numpy as np
-from src.model_arch import DNA_CNN_Upgraded
+import requests
 from tqdm import tqdm
+from src.model_arch import DNA_CNN_Upgraded
 
 def download_file_if_not_exists(url, filepath):
     """Downloads a file if it doesn't already exist."""
@@ -23,10 +21,15 @@ def download_file_if_not_exists(url, filepath):
                     f.write(chunk)
         print(f"Downloaded {os.path.basename(filepath)} successfully.")
 
+
 class DeepSeaHybridClassifier:
     def __init__(self, models_path='models/', data_path='data/processed/'):
         print("INFO: Initializing DeepSeaHybridClassifier...")
-        
+
+        self.models_path = models_path
+        self.data_path = data_path
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
         # Define the base URL for your raw files on GitHub
         base_url = "https://github.com/ashish5507/SIH_AIgnition/raw/main/"
         
@@ -39,40 +42,67 @@ class DeepSeaHybridClassifier:
             os.path.join(data_path, 'label_mappings_full.json'): base_url + "data/processed/label_mappings_full.json"
         }
         
-        # Download each file
+        # Download each file (only if missing)
         for local_path, url in files_to_ensure.items():
             download_file_if_not_exists(url, local_path)
 
-        # --- Load Models (same as before) ---
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        # ... (The rest of your __init__ and predict_batch methods remain exactly the same) ...
+        # --- Lazy load placeholders ---
+        self.cnn_model = None
+        self.vectorizer = None
+        self.kmeans = None
+        self.svd = None
+        self.int_to_label = None
+
+        # --- Basic params (available immediately) ---
         self.dna_vocab = {'<pad>': 0, 'A': 1, 'C': 2, 'G': 3, 'T': 4, '<unk>': 5}
         self.max_length = 500
-        self.vectorizer = joblib.load(os.path.join(models_path, 'hashing_vectorizer_proto.joblib'))
-        self.kmeans = joblib.load(os.path.join(models_path, 'kmeans_clusterer_proto.joblib'))
-        self.svd = joblib.load(os.path.join(models_path, 'svd_transformer_proto.joblib'))
-        with open(os.path.join(data_path, 'label_mappings_full.json'), 'r') as f:
-            mappings = json.load(f)
-        self.int_to_label = {int(k): v for k, v in mappings['int_to_label'].items()}
-        VOCAB_SIZE, EMBEDDING_DIM, NUM_CLASSES = len(self.dna_vocab), 64, len(self.int_to_label)
-        self.cnn_model = DNA_CNN_Upgraded(VOCAB_SIZE, EMBEDDING_DIM, NUM_CLASSES, self.max_length)
-        self.cnn_model.load_state_dict(torch.load(os.path.join(models_path, 'dna_cnn_full_v1.pth'), map_location=self.device))
-        self.cnn_model.to(self.device)
-        self.cnn_model.eval()
-        print("INFO: All models downloaded and loaded successfully.")
+        print("INFO: Initialization complete. Models will be loaded lazily on first use.")
+
+    def _lazy_load_models(self):
+        """Load CNN + clustering models only once."""
+        if self.cnn_model is None:
+            print("INFO: Loading models into memory...")
+
+            # Load vectorizer / clustering
+            self.vectorizer = joblib.load(os.path.join(self.models_path, 'hashing_vectorizer_proto.joblib'))
+            self.kmeans = joblib.load(os.path.join(self.models_path, 'kmeans_clusterer_proto.joblib'))
+            self.svd = joblib.load(os.path.join(self.models_path, 'svd_transformer_proto.joblib'))
+
+            with open(os.path.join(self.data_path, 'label_mappings_full.json'), 'r') as f:
+                mappings = json.load(f)
+            self.int_to_label = {int(k): v for k, v in mappings['int_to_label'].items()}
+
+            # Load CNN
+            VOCAB_SIZE, EMBEDDING_DIM, NUM_CLASSES = len(self.dna_vocab), 64, len(self.int_to_label)
+            self.cnn_model = DNA_CNN_Upgraded(VOCAB_SIZE, EMBEDDING_DIM, NUM_CLASSES, self.max_length)
+            state = torch.load(os.path.join(self.models_path, 'dna_cnn_full_v1.pth'),
+                               map_location=self.device)
+            self.cnn_model.load_state_dict(state)
+            self.cnn_model.to(self.device)
+            self.cnn_model.eval()
+
+            print("INFO: All models loaded successfully (lazy load complete).")
+
     def _tokenize_batch(self, dna_sequences):
         token_list = []
         for seq in dna_sequences:
             tokenized_seq = [self.dna_vocab.get(base, self.dna_vocab['<unk>']) for base in seq.upper()]
-            if len(tokenized_seq) > self.max_length: tokenized_seq = tokenized_seq[:self.max_length]
-            else: tokenized_seq += [self.dna_vocab['<pad>']] * (self.max_length - len(tokenized_seq))
+            if len(tokenized_seq) > self.max_length:
+                tokenized_seq = tokenized_seq[:self.max_length]
+            else:
+                tokenized_seq += [self.dna_vocab['<pad>']] * (self.max_length - len(tokenized_seq))
             token_list.append(tokenized_seq)
         return torch.LongTensor(token_list)
 
     def predict_batch(self, dna_sequences: list):
-        if not dna_sequences: return []
+        if not dna_sequences:
+            return []
+
+        # Ensure models are loaded
+        self._lazy_load_models()
         
         print("\n--- Starting New Batch Prediction (Adaptive Mode) ---")
+        
         # --- 1. Get Top-N predictions for the entire batch ---
         tokenized_input = self._tokenize_batch(dna_sequences).to(self.device)
         with torch.no_grad():
@@ -85,11 +115,10 @@ class DeepSeaHybridClassifier:
         for i in range(len(dna_sequences)):
             top_prob = top3_probs[i][0].item()
             third_prob = top3_probs[i][2].item()
-            ratio = top_prob / (third_prob + 1e-9) # Add epsilon to avoid division by zero
+            ratio = top_prob / (third_prob + 1e-9)  # Avoid division by zero
             ratios.append(ratio)
         
-        # --- 3. Compute the DYNAMIC threshold for this specific batch ---
-        # A simple but effective method: mean + 1 standard deviation
+        # --- 3. Compute the DYNAMIC threshold ---
         mean_ratio = np.mean(ratios)
         std_ratio = np.std(ratios)
         dynamic_threshold = mean_ratio + std_ratio
