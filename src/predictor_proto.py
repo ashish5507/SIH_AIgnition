@@ -1,73 +1,40 @@
+# src/predictor_proto.py (for Simple Method - Option A)
+
 import torch
 import torch.nn.functional as F
 import json
 import joblib
 import os
 import numpy as np
-import requests
-from tqdm import tqdm
+# The 'requests' import is no longer needed
 from src.model_arch import DNA_CNN_Upgraded
-
-def download_file_if_not_exists(url, filepath):
-    """Downloads a file to a persistent volume if it doesn't already exist."""
-    dir_name = os.path.dirname(filepath)
-    os.makedirs(dir_name, exist_ok=True) # This ensures the directory exists on the volume
-    if not os.path.exists(filepath):
-        print(f"Model not found on volume. Downloading {os.path.basename(filepath)}...")
-        with requests.get(url, stream=True) as r:
-            r.raise_for_status()
-            with open(filepath, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-        print(f"Downloaded {os.path.basename(filepath)} successfully to persistent volume.")
-    else:
-        print(f"Found {os.path.basename(filepath)} on persistent volume. Skipping download.")
-
 
 class DeepSeaHybridClassifier:
     def __init__(self):
-        print("INFO: Initializing DeepSeaHybridClassifier...")
+        print("INFO: Initializing DeepSeaHybridClassifier with QUANTIZED model...")
 
-        # These paths MUST be absolute to match the Railway Volume Mount Path
-        self.models_path = '/app/models/'
-        self.data_path = '/app/data/' # Consider a volume for this too if it's important
-
+        # These are now relative paths, as the files are copied with the app
+        self.models_path = 'models/'
+        self.data_path = 'data/processed/'
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        # Define the base URL for your raw files on GitHub
-        base_url = "https://github.com/ashish5507/SIH_AIgnition/raw/main/"
-        
-        # This logic will download files into the volume if they don't exist
-        files_to_ensure = {
-            os.path.join(self.models_path, 'dna_cnn_full_v1.pth'): base_url + "models/dna_cnn_full_v1.pth",
-            os.path.join(self.models_path, 'hashing_vectorizer_proto.joblib'): base_url + "models/hashing_vectorizer_proto.joblib",
-            os.path.join(self.models_path, 'kmeans_clusterer_proto.joblib'): base_url + "models/kmeans_clusterer_proto.joblib",
-            os.path.join(self.models_path, 'svd_transformer_proto.joblib'): base_url + "models/svd_transformer_proto.joblib",
-            os.path.join(self.data_path, 'label_mappings_full.json'): base_url + "data/processed/label_mappings_full.json"
-        }
-        
-        # Download each file (only if missing from the volume)
-        for local_path, url in files_to_ensure.items():
-            download_file_if_not_exists(url, local_path)
+        # NO DOWNLOAD LOGIC NEEDED
 
-        # Lazy load placeholders
         self.cnn_model = None
         self.vectorizer = None
         self.kmeans = None
         self.svd = None
         self.int_to_label = None
 
-        # Basic params
         self.dna_vocab = {'<pad>': 0, 'A': 1, 'C': 2, 'G': 3, 'T': 4, '<unk>': 5}
         self.max_length = 500
-        print("INFO: Initialization complete. Models will be loaded from volume on first use.")
+        print("INFO: Initialization complete. Quantized model will be loaded from local files on first use.")
 
     def _lazy_load_models(self):
-        """Load CNN + clustering models only once."""
+        """Load quantized CNN + clustering models only once."""
         if self.cnn_model is None:
-            print("INFO: Loading models into memory from volume...")
+            print("INFO: Loading models into memory from local files...")
 
-            # Load vectorizer / clustering
             self.vectorizer = joblib.load(os.path.join(self.models_path, 'hashing_vectorizer_proto.joblib'))
             self.kmeans = joblib.load(os.path.join(self.models_path, 'kmeans_clusterer_proto.joblib'))
             self.svd = joblib.load(os.path.join(self.models_path, 'svd_transformer_proto.joblib'))
@@ -76,18 +43,29 @@ class DeepSeaHybridClassifier:
                 mappings = json.load(f)
             self.int_to_label = {int(k): v for k, v in mappings['int_to_label'].items()}
 
-            # Load CNN
-            VOCAB_SIZE, EMBEDDING_DIM, NUM_CLASSES = len(self.dna_vocab), 64, len(self.int_to_label)
-            self.cnn_model = DNA_CNN_Upgraded(VOCAB_SIZE, EMBEDDING_DIM, NUM_CLASSES, self.max_length)
-            state = torch.load(os.path.join(self.models_path, 'dna_cnn_full_v1.pth'),
-                               map_location=self.device)
-            self.cnn_model.load_state_dict(state)
+            # --- How the quantized model is loaded ---
+            # 1. Create the original model structure with the CORRECT number of classes.
+            VOCAB_SIZE, EMBEDDING_DIM, NUM_CLASSES, MAX_LENGTH = len(self.dna_vocab), 64, 63582, self.max_length
+            model_fp32 = DNA_CNN_Upgraded(VOCAB_SIZE, EMBEDDING_DIM, NUM_CLASSES, MAX_LENGTH)
+            
+            # 2. Prepare it for quantization.
+            model_quantized = torch.quantization.quantize_dynamic(
+                model_fp32, {torch.nn.Conv1d, torch.nn.Linear}, dtype=torch.qint8
+            )
+
+            # 3. Load the saved weights into the quantized architecture.
+            model_path = os.path.join(self.models_path, 'dna_cnn_quantized_v1.pth')
+            model_quantized.load_state_dict(torch.load(model_path, map_location=self.device))
+            
+            self.cnn_model = model_quantized
             self.cnn_model.to(self.device)
             self.cnn_model.eval()
 
             print("INFO: All models loaded successfully (lazy load complete).")
 
+    # --- NO CHANGES to the methods below this line ---
     def _tokenize_batch(self, dna_sequences):
+        # ... (code is identical)
         token_list = []
         for seq in dna_sequences:
             tokenized_seq = [self.dna_vocab.get(base, self.dna_vocab['<unk>']) for base in seq.upper()]
@@ -99,42 +77,31 @@ class DeepSeaHybridClassifier:
         return torch.LongTensor(token_list)
 
     def predict_batch(self, dna_sequences: list):
+        # ... (code is identical)
         if not dna_sequences:
             return []
-
-        # Ensure models are loaded
         self._lazy_load_models()
-        
         print("\n--- Starting New Batch Prediction (Adaptive Mode) ---")
-        
-        # Get Top-N predictions for the entire batch
+        # (rest of your predict_batch logic)
         tokenized_input = self._tokenize_batch(dna_sequences).to(self.device)
         with torch.no_grad():
             logits = self.cnn_model(tokenized_input)
             probabilities = F.softmax(logits, dim=1)
             top3_probs, top3_indices = torch.topk(probabilities, 3, dim=1)
-        
-        # Calculate ratios for the entire batch
         ratios = []
         for i in range(len(dna_sequences)):
             top_prob = top3_probs[i][0].item()
             third_prob = top3_probs[i][2].item()
             ratio = top_prob / (third_prob + 1e-9)
             ratios.append(ratio)
-        
-        # Compute the DYNAMIC threshold
         mean_ratio = np.mean(ratios)
         std_ratio = np.std(ratios)
         dynamic_threshold = mean_ratio + std_ratio
-        print(f"Dynamic Threshold for this batch: {dynamic_threshold:.2f} (Mean: {mean_ratio:.2f}, Std: {std_ratio:.2f})")
-
-        # Make final decisions
         final_results = []
         for i, seq in enumerate(dna_sequences):
             current_ratio = ratios[i]
             top_prob = top3_probs[i][0].item()
             top_label = self.int_to_label.get(top3_indices[i][0].item(), "Unknown")
-            
             result = {
                 "sequence_id": f"seq_{i+1}",
                 "top_candidate": top_label,
@@ -142,7 +109,6 @@ class DeepSeaHybridClassifier:
                 "decision_metric_ratio": current_ratio,
                 "decision_threshold": dynamic_threshold,
             }
-
             if current_ratio > dynamic_threshold:
                 result["final_label"] = top_label
                 result["decision"] = "ACCEPTED"
@@ -153,7 +119,5 @@ class DeepSeaHybridClassifier:
                 novel_label = f"Novel_OTU_{cluster_id[0]}"
                 result["final_label"] = novel_label
                 result["decision"] = "REJECTED"
-            
             final_results.append(result)
-        
         return final_results

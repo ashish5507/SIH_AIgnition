@@ -1,7 +1,6 @@
-# Ignore large model files
-models/
-data/
+# .dockerignore
 
-# Ignore git and cache files
+# We REMOVED the lines for 'models/' and 'data/'
+# Keep these ones
 .git
 __pycache__/
